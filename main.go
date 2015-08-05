@@ -92,6 +92,18 @@ func main() {
 			return
 		}
 
+		if remoteHash := r.Header.Get("If-None-Match"); remoteHash != "" {
+			tcHash, err := artifactHash(id, artifactName)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Could not check hash: %s", err), 500)
+				return
+			}
+			if tcHash == remoteHash {
+				w.WriteHeader(304)
+				return
+			}
+		}
+
 		rc, contentLen, err := buildDownload(id, artifactName)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
@@ -149,6 +161,34 @@ func latestBuildID(buildTypeID, tag string) (string, error) {
 	}
 
 	return strconv.Itoa(out.Builds[0].ID), nil
+}
+
+func artifactHash(id, artifactName string) (string, error) {
+	u := fmt.Sprintf(
+		"%s/httpAuth/app/rest/builds/id:%s/artifacts/content/%s.md5",
+		restAddr,
+		id,
+		artifactName,
+	)
+
+	r, err := http.NewRequest("GET", u, nil)
+	if err != nil {
+		return "", err
+	}
+	r.SetBasicAuth(restUser, restPass)
+
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	berr, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(string(berr)), nil
 }
 
 // the ReadCloser *must* be closed when done

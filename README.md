@@ -16,3 +16,12 @@ A request to teamcity-latest looks like this:
     GET http://localhost:8112/buildTypeID/tag/artifactName
 
 And the response's body will be that artifact, or an error
+
+### If-None-Match
+
+If the client already has a copy of the artifact and only wants to download a
+newer version, if one exists, the client can send the md5 checksum of its local
+copy in the `If-None-Match` header of the request. teamcity-latest will retrieve
+an artifact called `artifactName.md5`, which should contain `artifactName`'s md5
+sum. If the checksum hasn't changed a `304 Not Modified` will be returned,
+otherwise the new artifact is returned.
