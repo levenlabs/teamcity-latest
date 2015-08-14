@@ -71,16 +71,22 @@ func main() {
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(r.URL.Path[1:], "/")
-		if len(parts) != 3 {
-			http.Error(w, "invalid url, must be /buildTypeID/tag/artifactName", 400)
+		if len(parts) < 2 {
+			http.Error(w, "invalid url, must be /buildTypeID/[tag]/artifactName", 400)
 			return
 		}
 		buildTypeID := parts[0]
-		tag := parts[1]
-		artifactName := parts[2]
+		var tag string
+		var artifactName string
+		if len(parts) == 3 {
+			tag = parts[1]
+			artifactName = parts[2]
+		} else {
+			artifactName = parts[1]
+		}
 
 		if buildTypeID == "" || tag == "" || artifactName == "" {
-			http.Error(w, "invalid url, must be /buildTypeID/tag/artifactName", 400)
+			http.Error(w, "invalid url, must be /buildTypeID/[tag]/artifactName", 400)
 			return
 		}
 
@@ -120,11 +126,20 @@ func main() {
 }
 
 func latestBuildID(buildTypeID, tag string) (string, error) {
+	//status:SUCCESS means it succeeded
+	//branch:default:any means it can come from any branch
+	//count:1 means return the latest match only
+	l := []string{"status:SUCCESS", "branch:default:any", "count:1"}
+	//buildType:id:{id} will only return builds for the buildTypeID
+	l = append(l, fmt.Sprintf("buildType:id:%s", buildTypeID))
+	//if a tag was sent then filter to builds including this tag(s)
+	if tag != "" {
+		l = append(l, fmt.Sprintf("tag:%s", tag))
+	}
 	u := fmt.Sprintf(
-		"%s/httpAuth/app/rest/builds/?locator=status:SUCCESS,buildType:id:%s,tags:%s,count:1",
+		"%s/httpAuth/app/rest/builds/?locator=%s",
 		restAddr,
-		buildTypeID,
-		tag,
+		strings.Join(l, ","),
 	)
 
 	r, err := http.NewRequest("GET", u, nil)

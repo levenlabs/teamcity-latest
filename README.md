@@ -13,7 +13,7 @@ file equivalents) are required.
 
 A request to teamcity-latest looks like this:
 
-    GET http://localhost:8112/buildTypeID/tag/artifactName
+    GET http://localhost:8112/buildTypeID/[tag]/artifactName
 
 And the response's body will be that artifact, or an error
 
