@@ -64,7 +64,7 @@ func main() {
 		go func() {
 			log.Fatal(client.Provide(
 				skyapiAddr, "teamcity-latest", listenAddr, 1, 100,
-				-1, 15*time.Second,
+				3, 15*time.Second,
 			))
 		}()
 	}
