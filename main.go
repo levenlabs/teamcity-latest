@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/levenlabs/go-llog"
 	"github.com/levenlabs/go-srvclient"
 	"github.com/mediocregopher/lever"
 	"github.com/mediocregopher/skyapi/client"
@@ -22,6 +22,33 @@ var (
 	listenAddr                   string
 	skyapiAddr                   string
 )
+
+type requestParams struct {
+	ip            string
+	buildTypeID   string
+	tag           string
+	artifactName  string
+	latestBuildID string
+}
+
+func (r requestParams) log(f llog.LogFunc, msg string, kvs ...llog.KV) {
+	var kv llog.KV
+	if len(kvs) > 0 {
+		kv = kvs[0]
+	} else {
+		kv = llog.KV{}
+	}
+	kv["ip"] = r.ip
+	kv["buildTypeID"] = r.buildTypeID
+	if r.tag != "" {
+		kv["tag"] = r.tag
+	}
+	kv["artifactName"] = r.artifactName
+	if r.latestBuildID != "" {
+		kv["latestBuildID"] = r.latestBuildID
+	}
+	f(msg, kv)
+}
 
 func main() {
 	l := lever.New("teamcity-latest", nil)
@@ -47,6 +74,11 @@ func main() {
 		Name:        "--skyapi-addr",
 		Description: "Hostname of skyapi, to be looked up via a SRV request. Unset means don't register with skyapi",
 	})
+	l.Add(lever.Param{
+		Name:        "--log-level",
+		Description: "Minimum log level to show, either debug, info, warn, error, or fatal",
+		Default:     "info",
+	})
 	l.Parse()
 
 	restUser, _ = l.ParamStr("--rest-user")
@@ -55,63 +87,75 @@ func main() {
 	listenAddr, _ = l.ParamStr("--listen-addr")
 	skyapiAddr, _ = l.ParamStr("--skyapi-addr")
 
+	logLevel, _ := l.ParamStr("--log-level")
+	llog.SetLevelFromString(logLevel)
+
 	if skyapiAddr != "" {
-		skyapiAddr, err := srvclient.SRV(skyapiAddr)
+		actualSkyapiAddr, err := srvclient.SRV(skyapiAddr)
 		if err != nil {
-			log.Fatal(err)
+			llog.Fatal("couldn't look up skyapi address", llog.KV{"skyapiAddr": skyapiAddr, "err": err})
 		}
 
 		go func() {
-			log.Fatal(client.Provide(
-				skyapiAddr, "teamcity-latest", listenAddr, 1, 100,
+			err := client.Provide(
+				actualSkyapiAddr, "teamcity-latest", listenAddr, 1, 100,
 				3, 15*time.Second,
-			))
+			)
+			llog.Fatal("skapi client failed", llog.KV{"skyapiAddr": actualSkyapiAddr, "err": err})
 		}()
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		var req requestParams
+		req.ip = r.RemoteAddr
+
 		parts := strings.Split(r.URL.Path[1:], "/")
 		if len(parts) < 2 {
+			req.log(llog.Warn, "invalid url, not enough parts", llog.KV{"url": r.URL.Path})
 			http.Error(w, "invalid url, must be /buildTypeID/[tag]/artifactName", 400)
 			return
 		}
-		buildTypeID := parts[0]
-		var tag string
-		var artifactName string
+		req.buildTypeID = parts[0]
 		if len(parts) == 3 {
-			tag = parts[1]
-			artifactName = parts[2]
+			req.tag = parts[1]
+			req.artifactName = parts[2]
 		} else {
-			artifactName = parts[1]
+			req.artifactName = parts[1]
 		}
 
-		if buildTypeID == "" || tag == "" || artifactName == "" {
+		if req.buildTypeID == "" || req.artifactName == "" {
+			req.log(llog.Warn, "invalid url, empty parts", llog.KV{"url": r.URL.Path})
 			http.Error(w, "invalid url, must be /buildTypeID/[tag]/artifactName", 400)
 			return
 		}
 
-		log.Printf("request for buildTypeID:%s tag:%s artifactName:%s", buildTypeID, tag, artifactName)
+		req.log(llog.Info, "request")
 
-		id, err := latestBuildID(buildTypeID, tag)
+		var err error
+		req.latestBuildID, err = latestBuildID(req.buildTypeID, req.tag)
 		if err != nil {
+			req.log(llog.Error, "couldn't get last build id", llog.KV{"err": err})
 			http.Error(w, err.Error(), 500)
 			return
 		}
 
 		if remoteHash := r.Header.Get("If-None-Match"); remoteHash != "" {
-			tcHash, err := artifactHash(id, artifactName)
+			tcHash, err := artifactHash(req.latestBuildID, req.artifactName)
 			if err != nil {
+				req.log(llog.Error, "couldn't check hash", llog.KV{"err": err})
 				http.Error(w, fmt.Sprintf("Could not check hash: %s", err), 500)
 				return
 			}
 			if tcHash == remoteHash {
+				req.log(llog.Info, "hashes match, not retrieving")
 				w.WriteHeader(304)
 				return
 			}
 		}
 
-		rc, contentLen, err := buildDownload(id, artifactName)
+		rc, contentLen, err := buildDownload(req.latestBuildID, req.artifactName)
 		if err != nil {
+			req.log(llog.Info, "couldn't get build download", llog.KV{"err": err})
 			http.Error(w, err.Error(), 500)
 			return
 		}
@@ -121,8 +165,9 @@ func main() {
 		io.Copy(w, rc)
 	})
 
-	log.Printf("listening on %s", listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, nil))
+	llog.Info("listening", llog.KV{"addr": listenAddr})
+	err := http.ListenAndServe(listenAddr, nil)
+	llog.Fatal("error listening", llog.KV{"err": err})
 }
 
 func latestBuildID(buildTypeID, tag string) (string, error) {
