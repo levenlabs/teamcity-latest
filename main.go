@@ -129,6 +129,11 @@ func main() {
 			return
 		}
 
+		// if they sent a query include that as well
+		if r.URL.RawQuery != "" {
+			req.artifactName += "?" + r.URL.RawQuery
+		}
+
 		req.log(llog.Info, "request")
 
 		var err error
